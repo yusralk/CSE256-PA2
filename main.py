@@ -6,6 +6,8 @@ import os
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
 
+from transformer import SpeechClassifier, Decoder
+from utilities import Utilities
 
 seed = 42
 
@@ -84,6 +86,7 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
     """
     decoderLMmodel.eval()
     losses= []
+    total_loss = 0
     for X, Y in data_loader:
         X, Y = X.to(device), Y.to(device)
         loss = decoderLMmodel(X, Y) # your model should be computing the cross entropy loss
@@ -91,7 +94,7 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
         total_loss += loss.item()
         if len(losses) >= eval_iters: break
 
-
+    print("total loss: ", total_loss)
     losses = torch.tensor(losses)
     mean_loss = losses.mean()
     perplexity = torch.exp(mean_loss).item()  # Calculate perplexity as exp(mean loss)
@@ -106,34 +109,127 @@ def main():
     tokenizer = SimpleTokenizer(' '.join(texts)) # create a tokenizer from the data
     print("Vocabulary size is", tokenizer.vocab_size)
 
-    train_CLS_dataset = SpeechesClassificationDataset(tokenizer, "speechesdataset/train_CLS.tsv")
-    train_CLS_loader = DataLoader(train_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
+    train_CLS_dataset = SpeechesClassificationDataset(
+        tokenizer,"speechesdataset/train_CLS.tsv")
+    train_CLS_loader = DataLoader(train_CLS_dataset,
+                                  batch_size=batch_size,
+                                  collate_fn=collate_batch,
+                                  shuffle=True)
 
   
-    inputfile = "speechesdataset/train_LM.txt"
-    with open(inputfile, 'r', encoding='utf-8') as f:
+    input_file = "speechesdataset/train_LM.txt"
+    with open(input_file, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
     train_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
     train_LM_loader = DataLoader(train_LM_dataset, batch_size=batch_size, shuffle=True)
 
-     # for the classification  task, you will train for a fixed number of epochs like this:
+    test_LM_files = ["test_LM_hbush.txt", "test_LM_obama.txt", "test_LM_wbush.txt"]
+    test_LM_loaders = []
 
+    for filename in test_LM_files:
+        with open("speechesdataset/" + filename, "r", encoding="utf-8") as file:
+            text = file.read()
+        dataset = LanguageModelingDataset(tokenizer, text, block_size)
+        loader = DataLoader(dataset,
+                            batch_size,
+                            shuffle=False)
+        test_LM_loaders.append(loader)
+
+    test_CLS_dataset = SpeechesClassificationDataset(
+        tokenizer,"speechesdataset/test_CLS.tsv")
+    test_CLS_loader = DataLoader(test_CLS_dataset,
+                                 batch_size=batch_size,
+                                 collate_fn=collate_batch,
+                                 shuffle=False)
+
+    model = SpeechClassifier(vocab_size=tokenizer.vocab_size,
+                             block_size=block_size,
+                             n_embed=n_embd,
+                             n_head=n_head,
+                             n_layer=n_layer,
+                             n_hidden=n_hidden,
+                             n_output=n_output).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    loss_fn = torch.nn.CrossEntropyLoss()
+    encoder_parameters = sum(p.nelement() for p in model.encoder.parameters())
+    print("encoder parameters: ", encoder_parameters)
+
+    # CLS training code here
     for epoch in range(epochs_CLS):
+        model.train()
+        total_loss = 0.0
         for xb, yb in train_CLS_loader:
             xb, yb = xb.to(device), yb.to(device)
+            optimizer.zero_grad()
+            scores, attn_matrices = model(xb)
+            loss = loss_fn(scores,yb)
+            loss.backward()
+            optimizer.step()
 
-            # CLS training code here
+            total_loss += loss.item()
 
+        model.eval()
+        correct = 0
+        total = 0
 
+        with torch.no_grad():
+            for xb, yb in test_CLS_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                scores, _ = model(xb)
+                predictions = scores.argmax(dim=1)
+                correct = correct + (predictions==yb).sum().item()
+                total = total + yb.size(0)
+
+        accuracy = (100 * correct) / total
+        average_loss = total_loss / len(train_CLS_loader)
+
+        print("Epoch ", {(epoch+1)/epochs_CLS})
+        print("loss: ", average_loss)
+        print("test accuracy", accuracy)
+
+    utils = Utilities(tokenizer, model)
+    utils.sanity_check("We must work together to build a better future", block_size)
+
+    decoder = Decoder(vocab_size=tokenizer.vocab_size,
+                      block_size=block_size,
+                      n_embed=n_embd,
+                      n_head=n_head,
+                      n_layer=n_layer).to(device)
+    optimizer = torch.optim.Adam(decoder.parameters(),
+                                 lr = learning_rate)
+    decoder.train()
+    decoder_parameters = sum(param.numel() for param in decoder.parameters()
+                             if param.requires_grad)
+    print("Decoder Parameters: ", decoder_parameters)
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
     for i, (xb, yb) in enumerate(train_LM_loader):
         if i >= max_iters:
             break
         xb, yb = xb.to(device), yb.to(device)
-        # LM training code here
 
-    
+        #get predictions + calculate loss
+        loss = decoder(xb, yb)
+        #update the weights
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
 
+        if (i+1) % eval_interval == 0:
+            print("iteration: ", i)
+
+    print("Total training batches: ", len(train_LM_loader))
+    train_perplexity = compute_perplexity(decoder, train_LM_loader, eval_iters)
+    hbush_perplexity = compute_perplexity(decoder, test_LM_loaders[0], eval_iters)
+    obama_perplexity = compute_perplexity(decoder, test_LM_loaders[1], eval_iters)
+    wbush_perplexity = compute_perplexity(decoder, test_LM_loaders[2], eval_iters)
+
+    print("Train Perplexity: ", train_perplexity)
+    print("HBush Perplexity: ", hbush_perplexity)
+    print("Obama Perplexity: ", obama_perplexity)
+    print("WBush Perplexity: ", wbush_perplexity)
+    utils = Utilities(tokenizer, decoder)
+    utils.sanity_check("We must work together to build a better future", block_size)
 
 
 if __name__ == "__main__":
