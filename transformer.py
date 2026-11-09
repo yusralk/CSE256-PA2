@@ -10,7 +10,6 @@ class FeedForward(nn.Module):
         super().__init__()
         self.network = nn.Sequential(nn.Linear(n_embed, hidden_size),
                                      nn.ReLU(),
-                                     nn.Dropout(0.1),
                                      nn.Linear(hidden_size, n_embed))
 
     def forward(self, x):
