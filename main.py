@@ -108,6 +108,8 @@ def main():
     parser = argparse.ArgumentParser(description='program description')
     parser.add_argument('--part', choices=['1', '2'], help='encoder or decoder')
     args = parser.parse_args()
+    sanity_check_ex1 = "We must work together to build a better future"
+    sanity_check_ex2 = "Race remains a potent and often divisive force in our society"
 
 
     print("Loading data and creating tokenizer ...")
@@ -190,12 +192,13 @@ def main():
             accuracy = (100 * correct) / total
             #average_loss = total_loss / len(train_CLS_loader)
 
-            print("Epoch ", '%.3f'%((epoch+1)/epochs_CLS))
+            print("Epoch ", epoch)
             #print("loss: ", average_loss)
-            print("test accuracy", '%.3f'%(accuracy))
+            print("test accuracy", '%.3f'% accuracy)
 
+        print("Final test accuracy: ", '%.3f' % accuracy)
         utils = Utilities(tokenizer, model)
-        utils.sanity_check("We must work together to build a better future", block_size)
+        utils.sanity_check(sanity_check_ex1, block_size)
     if args.part == '2':
         decoder = Decoder(vocab_size=tokenizer.vocab_size,
                           block_size=block_size,
@@ -245,7 +248,7 @@ def main():
         print("Total training batches: ", len(train_LM_loader))
 
         utils = Utilities(tokenizer, decoder)
-        utils.sanity_check("We must work together to build a better future", block_size)
+        utils.sanity_check(sanity_check_ex2, block_size)
 
 
 if __name__ == "__main__":
